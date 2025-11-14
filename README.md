@@ -5,13 +5,6 @@
 - Sensors: 2x OPB704 (digital output)
 - Wiring:
 
-| JA Pin | Connected To |
-|--------|---------------|
-| JA1    | OUT1 (Sensor 1) |
-| JA2    | OUT2 (Sensor 2) |
-| JA7    | VCC (3.3V) |
-| JA8    | GND |
-
 - Logic : Active-Low (0 = object detected)
 
 ---
