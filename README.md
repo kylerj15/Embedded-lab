@@ -12,7 +12,9 @@
 ###  PmodDHB1 (Motor + Encoder)
 - Connected to Pmod JD
 - Motors: 2x DG01D 48:1 Mini DC Gearbox Motors
+   left - J5 right - J6
 - Encoders: Hall-effect sensors (2 per motor)
+-     left - J7 right- J8
 - Motor Control: Direction + Enable via GPIO or PWM
 
 ---
