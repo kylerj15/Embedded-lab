@@ -1,125 +1,81 @@
-#include "FreeRTOS.h"
-#include "task.h"
-#include "xgpio_l.h"
+// xilinx headers
 #include "xil_printf.h"
-#include "semphr.h"
+#include "xil_types.h"
 
+// sensors
+#include "xparameters.h"
+#include "xgpio.h"
+#include "Pmod_DHB1.h"
+#include "PWM.h"
 
-#define LEDS_BASE_ADDR     0x40010000  // RGB LED GPIO
-#define BUTTONS_BASE_ADDR  0x40000000  // Buttons GPIO
-#define MOTOR_GPIO_ADDR    0x40020000   // Motor GPIO 
+// Pmod DHB1
+#define XPAR_PMOD_DHB1_0_GPIO_BASEADDR   0x44A10000
+#define XPAR_PMOD_DHB1_0_PWM_BASEADDR   0x44A20000
+#define PMOD_DHB1_CLOCK_FREQ_HZ   XPAR_CPU_CORE_CLOCK_FREQ_HZ
+#define M1_CHANNEL 1
+#define M2_CHANNEL 2
 
-#define RGB_WHITE 0xFFFF
-#define RGB_GREEN 02222
-#define MOTOR_ENABLE  (1 << 0)  // EN1
-#define MOTOR_DIR     (1 << 1)  // DIR1
-#define MOTOR_SLEEP   (1 << 2)  // NSLEEP
+#define PWM_PERIOD 0x00029000 // 2ms
+#define PWM_DUTY   0x00014800 // 50% duty cycle
 
-#define MOTOR_ON  (MOTOR_ENABLE | MOTOR_DIR | MOTOR_SLEEP)
-#define MOTOR_OFF 0x00  // All low
+XGpio DHB1_GPIO;
+PmodDHB1 motor;
 
-typedef enum {
-    WHITE,
-    RUN
-} State;
-
-State state = WHITE;
-int programOn = 0;
-SemaphoreHandle_t state_mutex;
-TaskHandle_t WhiteTaskHandle = NULL;
-TaskHandle_t RunTaskHandle = NULL;
-TaskHandle_t SupervisorTaskHandle = NULL;
-
-void WhiteTask(void *arg)
-{
-    xil_printf("WhiteTask started\r\n");
-
-    while (1)
-    {
-        XGpio_WriteReg(LEDS_BASE_ADDR, XGPIO_DATA_OFFSET, RGB_WHITE);
-        XGpio_WriteReg(MOTOR_GPIO_ADDR, XGPIO_DATA_OFFSET, MOTOR_ON);
-
-        uint32_t btn = XGpio_ReadReg(BUTTONS_BASE_ADDR, XGPIO_DATA2_OFFSET) & 0xF;
-        if (btn)
-        {
-            if (xSemaphoreTake(state_mutex, 10))
-            {
-                xil_printf("Button pressed, switching to RUN\r\n");
-                programOn = 1;
-                state = RUN;
-                xSemaphoreGive(state_mutex);
-                vTaskResume(SupervisorTaskHandle);
-            }
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
+// Move to utils.h/.c in future
+static void delay_ms(int ms) {
+    for (int i = 0; i < 1500 * ms; i++)
+        asm("nop");
 }
 
-void RunTask(void *arg)
-{
-    xil_printf("RunTask started\r\n");
+int main() {
+    // Initialize GPIO interface for DHB1
+    DHB1_GPIO_Initialize(&DHB1_GPIO, XPAR_PMOD_DHB1_0_GPIO_BASEADDR);
 
-    while (1)
-    {
-        XGpio_WriteReg(LEDS_BASE_ADDR, XGPIO_DATA_OFFSET, RGB_GREEN);
-        XGpio_WriteReg(MOTOR_GPIO_ADDR, XGPIO_DATA_OFFSET, MOTOR_ON);
+    XGpio_SetDataDirection(&DHB1_GPIO, M1_CHANNEL, 0xC);
+    XGpio_SetDataDirection(&DHB1_GPIO, M2_CHANNEL, 0xC);
+    xil_printf("check 1\r\n");
 
-        // Future: Add sensor check here
+    // Initialize motor instance
+    DHB1_GPIO_Initialize(&DHB1_GPIO, XPAR_PMOD_DHB1_0_GPIO_BASEADDR);
 
-        vTaskSuspend(NULL);
-    }
-}
+    DHB1_begin(&motor,
+            XPAR_PMOD_DHB1_0_GPIO_BASEADDR,
+            XPAR_PMOD_DHB1_0_PWM_BASEADDR,
+            PMOD_DHB1_CLOCK_FREQ_HZ,
+            PWM_PERIOD * 3);
+    xil_printf("check 2\r\n");
 
-void SupervisorTask(void *arg)
-{
-    xil_printf("SupervisorTask started\r\n");
+    // Set motor PWM duty cycle
+    PWM_Set_Duty(XPAR_PMOD_DHB1_0_PWM_BASEADDR, PWM_PERIOD * 2, 0);
+    PWM_Set_Duty(XPAR_PMOD_DHB1_0_PWM_BASEADDR, PWM_PERIOD * 2, 1);
 
-    while (1)
-    {
-        if (xSemaphoreTake(state_mutex, 10))
-        {
-            switch (state)
-            {
-            case WHITE:
-                vTaskResume(WhiteTaskHandle);
-                break;
-            case RUN:
-                if (programOn)
-                    vTaskResume(RunTaskHandle);
-                break;
-            }
-            xSemaphoreGive(state_mutex);
-        }
+    // Enable motor
+    DHB1_motorEnable(&motor);
+    xil_printf("check 3\r\n");
 
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-}
+    u32 m1, m2, count = 0;
+    while (count < 5) {
+        // PWM status
+        u32 PWM_ctrl_reg   = PWM_mReadReg(XPAR_PMOD_DHB1_0_PWM_BASEADDR, PWM_AXI_CTRL_REG_OFFSET);
+        u32 PWM_status_reg = PWM_mReadReg(XPAR_PMOD_DHB1_0_PWM_BASEADDR, PWM_AXI_CTRL_REG_OFFSET);
+        u32 PWM_period_reg = PWM_Get_Period(XPAR_PMOD_DHB1_0_PWM_BASEADDR);
+        u32 PWM_duty_reg   = PWM_Get_Duty(XPAR_PMOD_DHB1_0_PWM_BASEADDR, 0);
 
-int main(void)
-{
-    xil_printf("System Booting...\r\n");
+        xil_printf("PWM Control: 0x%08x\r\n", PWM_ctrl_reg);
+        xil_printf("PWM Status:  0x%08x\r\n", PWM_status_reg);
+        xil_printf("PWM Period:  0x%08x\r\n", PWM_period_reg);
+        xil_printf("PWM Duty:    0x%08x\r\n", PWM_duty_reg);
 
-    XGpio_WriteReg(LEDS_BASE_ADDR, XGPIO_TRI_OFFSET, 0x0);           // LED out
-    XGpio_WriteReg(BUTTONS_BASE_ADDR, XGPIO_TRI2_OFFSET, 0xF);       // Buttons in
-    XGpio_WriteReg(MOTOR_GPIO_ADDR, XGPIO_TRI_OFFSET, 0x0);          // Motor control out
+        // Read GPIO motor feedback
+        m1 = XGpio_DiscreteRead(&DHB1_GPIO, M1_CHANNEL);
+        m2 = XGpio_DiscreteRead(&DHB1_GPIO, M2_CHANNEL);
+        xil_printf("Motor GPIO:  0x%08x, 0x%08x\r\n", m1, m2);
 
-    state_mutex = xSemaphoreCreateMutex();
-    if (!state_mutex)
-    {
-        xil_printf("Mutex creation failed.\r\n");
-        return -1;
+        delay_ms(3000);
+        count++;
     }
 
-    xTaskCreate(SupervisorTask, "Supervisor", configMINIMAL_STACK_SIZE, NULL, 1, &SupervisorTaskHandle);
-    xTaskCreate(WhiteTask, "White", configMINIMAL_STACK_SIZE, NULL, 1, &WhiteTaskHandle);
-    xTaskCreate(RunTask, "Run", configMINIMAL_STACK_SIZE, NULL, 1, &RunTaskHandle);
-
-    vTaskSuspend(RunTaskHandle);
-
-    xil_printf("FreeRTOS Scheduler Starting...\r\n");
-    vTaskStartScheduler();
-
-    xil_printf("Scheduler stopped unexpectedly.\r\n");
+    // Stop motor
+    DHB1_motorDisable(&motor);
     return 0;
 }
